@@ -55,9 +55,6 @@ global_answers_graph <- ggplot(data = global_answers,
   coord_polar("y",
               start = 0) +
   theme_void() +
-  ggtitle(paste0("Réponses globales au sondage\n(",
-                 nrow(x = data),
-                 " participants)")) +
   theme(legend.title = element_blank())
 
 ggsave(filename = paste(output_directory_path,
@@ -78,7 +75,6 @@ non_mutualised_online_space_repartition_graph <- ggplot(data = non_mutualised_on
   coord_polar("y",
               start = 0) +
   theme_void() +
-  ggtitle("Résumé des espaces en ligne (non mutualisée) utilisés") +
   theme(legend.title = element_blank())
 
 ggsave(filename = paste(output_directory_path,
