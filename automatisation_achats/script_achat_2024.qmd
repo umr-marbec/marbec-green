@@ -1,0 +1,224 @@
+---
+title: "Script de combinaison et d'homogénéisation des achats annuels"
+description: "Ce script permet de charger les fichiers d'achats annuels des différentes tutelles, de les combiner et de les homogénéiser dans un seul fichier au format requis par le Lab 1.5."
+auteur: "Esther MOLLIER <esther.mollier@ird.fr>"
+format: html
+---
+
+# Nettoyage et homogénéisation des fichiers 
+
+Avant de démarrer, plusieurs étapes sont necessaires: 
+*Renomer les fichiers d'achats* sous la format achat_TUTELLE_ANNEE (TUTELLE bien en majuscule, année format AAAA ex: achat_CNRS_2023)
+*"Nettoyer" les fichiers*
+- Suppression de colonnes nommées de la même façon (ex table IRD 2023, double colonne devise ifremer)
+- Mettre tout au format xlsx au lieu de xls 
+- Enlever les cases fusionnées si il y en a (problème de lecture avec R)
+*Renommer certaines colonnes* (à voir pour automatiser ça par la suite)
+- colonne "code" pour les codes nacres de tutuelles et "code_ifremer" pour la table ifremer
+- colonne "valeur" pour le montant 
+- colonne "devise" pour la devise du montant
+
+==> à l'avenir demander aux tutelles de forunir le document dans un même format 
+
+```{r}
+#| label: setup
+# On charge les packages necessaires
+rm(list = ls())
+library(openxlsx)
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+# Et les fichiers en xslx formaté à la main au préalable 
+achat_IRD <- read.xlsx("data/achat/achat_IRD_2024.xlsx")
+achat_IFREMER <- read.xlsx("data/achat/achat_IFREMER_2024.xlsx")
+achat_UM <- read.xlsx("data/achat/achat_UM_2024.xlsx")
+achat_CNRS <- read.xlsx("data/achat/achat_CNRS_2024.xlsx")
+achat_INRAE <- read.xlsx("data/achat/achat_INRAE_2024.xlsx")
+table_conv_devise <- read.xlsx("data/table_devise_2024.xlsx")
+
+#correspondance_2019 <- read.xlsx("data/correspondance_code/correspondance_2019.xlsx")
+#correspondance_2023 <- read.xlsx("data/correspondance_code/correspondance_2023.xlsx")
+
+# On utilise uniquement les dernière correspondances d'Isabelle 
+correspondance_2024 <- read.xlsx("data/correspondance_code/correspondance_2024.xlsx")
+
+ifremer_nacres <- read.xlsx("data/correspondance_code/ifremer_nacres.xlsx")
+autres_nacres <- read.xlsx("data/correspondance_code/autres_nacres.xlsx")
+```
+
+# Conversion des devises étrangères
+
+Dans les fichiers d'achat, il y a parfois des montants qui ne sont pas en euros mais dans des devises étranges. Il faut donc les convertir. Pour cela j'ai cherché une table de conversion des devises 
+Trouvée sur le site https://www.xe.com/currencytables/ en selectionnant la date du premier janvier de l'année d'étude
+
+On renomme les colonnes de la façon suivante: devise	nom	unite_par_euro	euro_par_unite
+
+```{r}
+#| label: identification_devises_etrangeres
+process_achat <- function(data, tutelle) {
+  # On identifie la colonne où il y a les devises (seulement trois characters) afin de la renommer
+  nom_col_devise <- data %>%
+    select(where(~ !any(is.na(.)) && 
+                   all(nchar(.) == 3) && 
+                   all(grepl("^[A-Z]{3}$", .)))) %>%
+    colnames()
+  
+  # Aucune colonne devise trouvée
+  if (length(nom_col_devise) == 0) {
+    cat("Aucune colonne de devise trouvée dans ", tutelle, ".\n", sep = "")
+    return()
+  }
+  
+  # Plus d'une colonne devise trouvée
+  if (length(nom_col_devise) != 1) {
+    cat("Il y a plus d'une colonne devise (trois lettres majuscules) dans le fichier ", tutelle, ". Supprimer la ou les colonnes inutiles parmi ", paste (nom_col_devise, sep=","), "et recommencer.", ".\n", sep = "")
+    return()
+  }
+  
+  # On extrait les devises présentes
+  devises_presentes <- data %>%
+    distinct(!!sym(nom_col_devise)) %>%
+    pull(!!sym(nom_col_devise))
+  
+  cat("Les devises présentes dans le document", tutelle, "sont:", paste(devises_presentes, collapse = ", "), "\n")
+  
+  return(list(nom_col_devise = nom_col_devise, devises = devises_presentes))
+}
+
+achat_list <- list(
+  IRD = achat_IRD,
+  IFRMER = achat_IFREMER,
+  UM = achat_UM, 
+  CNRS = achat_CNRS,
+  INRAE = achat_INRAE
+)
+
+invisible(mapply(process_achat, achat_list, names(achat_list)))
+
+```
+
+```{r}
+#| label: conversion_devises_etrangeres
+# Liste des tutelles avec plusieurs devises (à automatiser aussi)
+tutelles_devises_multiples <- c("IRD", "UM")
+
+apply_currency_conversion <- function(data, tutelle, table_conv_devise) {
+  data <- merge(data, table_conv_devise, by = "devise", all.x = TRUE)
+  
+  # On calcule la valeur nette en EUR
+  data <- data %>%
+    dplyr::mutate(
+      valeur = valeur*euro_par_unite)
+  
+  return(data)}
+
+achat_IRD <- apply_currency_conversion(achat_IRD, IRD,table_conv_devise)
+achat_UM <- apply_currency_conversion(achat_UM, UM,table_conv_devise)
+```
+
+# Conversion des codes NACRES Ifremer par rapport aux codes NACRES des autres tutelles
+
+Ici, on a un fichier de correspondance mais qui pourrait eventuellement varier au cours du temps, il faudra bien veiller à rester à jour lorsqu'il y aura une modification des codes à l'avenir. 
+
+```{r}
+#| label: verif_fichiers_correspondance_codes
+# On fait quelques modif pour supprimer les espaces et les "et" dans la table
+code_correspondance <- correspondance_2024 %>%
+  #left_join(correspondance_2019, by = "code_ifremer", ) %>%
+  mutate(code_autre = str_replace_all(code_autre, pattern = ", | ,| et ", replacement = ","))
+
+```
+
+La table de correspondance 2024 donne une correspondance unique pour chaque code nacre ifremer afin de simplifier la procédure. POur certains codes ifremer très généraux, il y a beaucoup d'associations possibles avec les codes nacres classiques. Pour ces cas là, Isabelle a indiqué un zéro. Ici on regarde les cas où il y a un zéro et on leur attribu un code nacres à partir de l'intitullé de l'achat.
+
+```{r}
+#| label: modification_codes_ifremer
+# Modification achat IFREMER par rapport à la correspondance
+achat_IFREMER <- achat_IFREMER %>%
+  left_join(code_correspondance,achat_IFREMER, by="code_ifremer")
+
+# detection de codes avec aucune corresponadance 
+code_0_IFREMER <- achat_IFREMER %>%
+  filter(code_autre==0)
+
+paste0(code_0_IFREMER$Désignation)
+
+# detection codes NA
+code_na_IFREMER <- achat_IFREMER %>%
+  filter(is.na(code_autre))
+
+paste0(code_na_IFREMER$Désignation)
+
+# ATTENTION MANIP POUR 2024 Modification par rapport à table des codes NACRES 
+achat_IFREMER <- achat_IFREMER %>%
+  mutate(code_autre = case_when(
+    code_autre == 0 ~ 'GA.51',
+    is.na(code_autre) | grepl("nitrile", Désignation) ~ 'HA.01',
+    is.na(code_autre) | grepl("Blouson Crew midlayer 2-0 Femme TL", Désignation) ~ 'HA.04',
+    is.na(code_autre) | grepl("Gant EcoSHIELD", Désignation) ~ 'HA.03',
+    TRUE ~ as.character(code_autre)
+  ))
+```
+
+
+```{r}
+#| label: On combine ensuite tous les fichiers pour sortir au bon format
+## Avant cette opération, il faut bien renommer les colonnes value et code/code_ifremer(à automatiser après)
+# Formater les dossiers xlsx d'achat pour que les codes soient de la même forme (LETTRELETTRE.CHIFFRECHIFFRE)
+achat_CNRS <- achat_CNRS %>%
+  mutate(code = sub("-", ".", code)) %>%
+  mutate(code = sub("([A-Z]{2})([0-9]{2})", "\\1.\\2", code)) %>%
+  mutate(label = "CNRS") %>%
+  select(code, valeur, label)
+
+achat_INRAE <- achat_INRAE %>%
+  mutate(code = sub("-", ".", code)) %>%
+  mutate(code = sub("([A-Z]{2})([0-9]{2})", "\\1.\\2", code)) %>%
+  mutate(label = "INRAE") %>%
+  select(code, valeur, label)
+
+achat_IRD <- achat_IRD %>%
+  mutate(code = sub("-", ".", code)) %>%
+  mutate(code = sub("([A-Z]{2})([0-9]{2})", "\\1.\\2", code)) %>%
+  mutate(label = "IRD") %>%
+  select(code, valeur, label)
+
+achat_UM <- achat_UM %>%
+  mutate(code = sub("-", ".", code)) %>%
+  mutate(code = sub("([A-Z]{2})([0-9]{2})", "\\1.\\2", code)) %>%
+  mutate(label = "UM") %>%
+  select(code, valeur, label)
+
+achat_IFREMER <- achat_IFREMER %>%
+  mutate(code_autre = sub("-", ".", code_autre)) %>%
+  mutate(code_autre = sub("([A-Z]{2})([0-9]{2})", "\\1.\\2", code_autre)) %>%
+  mutate(code = code_autre) %>%
+  mutate(label = "IFREMER") %>%
+  select(code, valeur, label)
+
+data_final_0 <- bind_rows(achat_CNRS, achat_IFREMER, achat_IRD, achat_UM) |> 
+  group_by(code, label) |> 
+  summarise(value = sum(valeur))
+```
+
+```{r}
+#| label: Suppression des codes relatifs à l'informatique
+# On supprime tous les codes identifiés par Laureline et à supprimer 
+codes_inf_supr = c('IA.01', 'IA.11','IA.12','IA.21','IA.23','IA.24','IA.25','IA.31','IA.32','IA.33','IA.34','IA.41','IA.42','IA.43','IA.44','IA.45','IE.01','IE.02','IE.21','IE.22','IE.31','IE.32','IE.33','IE.35','IE.37','IE.41','IE.42','IE.43','IE.37','IE.41','IE.42','IE.43','IG.01','IG.02','IG.03','IG.04')
+
+data_final <- subset(data_final_0, !(code %in% codes_inf_supr)) 
+```
+
+
+```{r}
+#| label: fusion_fichier_final_save_csv
+write.csv(data_final, "output/achats_2024.csv")
+```
+
+
+
+
+
+
+

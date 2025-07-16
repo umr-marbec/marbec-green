@@ -1,0 +1,20 @@
+Format des fichiers
+- Renomer les fichiers avec achat_TUTELLE (bien en majuscule)
+
+Des nettoyages ont été necessaires
+- Suppression dans table IRD de la double colonne I qui posait problème pour le nommage par la suite 
+- Format CNRS mis au format xlsx au lieu de xls et nettoyage du fichier (cases fusionnées, difficiles à lire pour R)
+- Format INRAE aussi mis en xlsx 
+- suppression colonne double devise dans purchase ifremer
+
+Dans chaque table, il faut renommer deux colonnes (à voir pour l'automatiser par la suite)
+- colonne "code" pour les codes nacres de tutuelles et "code_ifremer" pour la table ifremer
+- colonne "valeur" pour le montant 
+
+
+==> à l'avenir demander aux tutelles de forunir le document dans un même format 
+
+Table de conversion des devises 
+Trouvée sur le site https://www.xe.com/currencytables/ 
+- en selectionnant la date du premier janvier de l'année d'étude
+- j'ai mis les noms des colonnes de la façon suivantes: currency	name	unit_per_euro	euro_per_unit
