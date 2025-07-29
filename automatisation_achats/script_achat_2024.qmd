@@ -205,7 +205,13 @@ data_final_0 <- bind_rows(achat_CNRS, achat_IFREMER, achat_IRD, achat_UM) |>
 ```{r}
 #| label: Suppression des codes relatifs à l'informatique
 # On supprime tous les codes identifiés par Laureline et à supprimer 
-codes_inf_supr = c('IA.01', 'IA.11','IA.12','IA.21','IA.23','IA.24','IA.25','IA.31','IA.32','IA.33','IA.34','IA.41','IA.42','IA.43','IA.44','IA.45','IE.01','IE.02','IE.21','IE.22','IE.31','IE.32','IE.33','IE.35','IG.01','IG.02','IG.03','IG.04')
+codes_inf_supr = c(
+  'AD21','AD22','AD23','AD24','AD25',
+  'BA01','BA02','BA03','BA04','BA05','BA06','BA07',
+  'DA01','DA02','DA11','DA12','DA14','DA15','DA16','DA17',
+  'IA.01', 'IA.11','IA.12','IA.21','IA.23','IA.24','IA.25','IA.31','IA.32','IA.33','IA.34','IA.41','IA.42','IA.43','IA.44','IA.45',
+  'IE.01','IE.02','IE.21','IE.22','IE.31','IE.32','IE.33','IE.35',
+  'IG.01','IG.02','IG.03','IG.04')
 
 data_final <- subset(data_final_0, !(code %in% codes_inf_supr)) 
 ```
