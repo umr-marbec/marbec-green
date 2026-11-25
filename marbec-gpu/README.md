@@ -9,8 +9,8 @@ Les deux serveurs sont allumés en continu, consommation sur l'année :
 
 ## Fichiers
 
-- `extraire_donnees_marbec_gpu.sh` : export des jobs SLURM (`sacct`), description du matériel et lecture `ipmitool`. A lancer sur marbec-gpu avec `sudo`.
-- `suivi_puissance.sh` : relevé toutes les 5 minutes de la puissance du serveur (`ipmitool`) et des GPU (`nvidia-smi`), dans `/var/log/bilan-carbone/`.
+- `scr/extraire_donnees_marbec_gpu.sh` : export des jobs SLURM (`sacct`), description du matériel et lecture `ipmitool`. A lancer sur marbec-gpu avec `sudo`.
+- `scr/suivi_puissance.sh` : relevé toutes les 5 minutes de la puissance du serveur (`ipmitool`) et des GPU (`nvidia-smi`), dans `/var/log/bilan-carbone/`.
 - `bilan_carbone_marbec_gpu_anonime.ipynb` : calcul du bilan, répartition indicative par utilisateur, statistiques d'utilisation et section marbec-data.
 - `data/` : données anonymisées (logins remplacés par `user01`, `user02`...).
 
