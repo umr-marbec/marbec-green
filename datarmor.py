@@ -21,15 +21,40 @@ References
 """
 from __future__ import annotations
 
+import json
 import re
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
 SECONDS_PER_HOUR = 3600.0
+SECONDS_PER_DAY = 86400.0
 KG_PER_TONNE = 1000.0
 EXPECTED_MONTHS = 12
+
+# Graphite datasource behind https://grafana.ifremer.fr (anonymous read access).
+GRAPHITE_RENDER_URL = (
+    "https://grafana.ifremer.fr/api/datasources/proxy/uid/000000001/render"
+)
+# Cumulative kWh counter of the "Compteur Energie Datarmor" panel of the
+# "Datarmor Diris" dashboard (uid 000000022): whole machine, cooling included.
+DIRIS_DATARMOR_TARGET = (
+    "sumSeries(DIRISDATARMOR.TOTAL_RP_POS_3,DIRISDATARMOR.TOTAL_RP_POS_4)"
+)
+# Cumulative kWh counter of the "Compteur Energie Datarmor IT" panel (IT
+# equipment only). The PUE of the dashboard is DIRIS_DATARMOR / DIRIS_DATARMOR_IT.
+DIRIS_DATARMOR_IT_TARGET = (
+    "sumSeries(DIRISDATARMOR.TOTAL_RP_POS_4,scale(DIRISDATARMOR.TOTAL_RP_POS_5,-1))"
+)
+# Daily reserved core-seconds (cores x walltime) summed over all users of one
+# PBS cluster ("*" = all clusters), as in the EFWALCoreUsed panel of the
+# "DATARMOR pbsacctsql Total" dashboard (uid 000000028).
+PBS_CLUSTERS = ("HPCSIMPLE", "HPCHYPERTHREAD", "SMP", "VISU")
+PBS_TARGET = "sumSeries(DATARMORPBS.USERS.*.{cluster}.{metric})"
+PBS_EFWALCOREUSED_TARGET = PBS_TARGET.format(cluster="*", metric="EFWALCoreUsed")
 
 # Lines such as "202301:adupaix : 478250353" (YYYYMM:user:cpu_seconds)
 _MAIL_LINE = re.compile(r"^\s*(\d{4})(\d{2})\s*:\s*([A-Za-z0-9_]+)\s*:\s*(\d+)\s*$")
@@ -147,3 +172,82 @@ def footprint_tco2e(cpu_seconds: float, machine: MachineStats,
     """
     kwh = energy_kwh(cpu_seconds, machine, overhead_factor)
     return kwh * kgco2e_per_kwh / KG_PER_TONNE
+
+
+def fetch_graphite(target: str, start: str, end: str,
+                   url: str = GRAPHITE_RENDER_URL, timeout: float = 120.0) -> pd.Series:
+    """Download one Graphite series (``start``/``end`` as ``YYYYMMDD``, UTC).
+
+    Returns a Series indexed by UTC timestamps; missing points are NaN.
+    Only the first series is returned, so ``target`` should aggregate
+    (e.g. ``sumSeries``).
+    """
+    query = urllib.parse.urlencode({"target": target, "from": start, "until": end,
+                                    "format": "json", "maxDataPoints": 100_000})
+    with urllib.request.urlopen(f"{url}?{query}", timeout=timeout) as response:
+        payload = json.load(response)
+    if not payload:
+        raise ValueError(f"no data returned for {target!r}")
+    values, stamps = zip(*payload[0]["datapoints"])
+    index = pd.to_datetime(stamps, unit="s", utc=True)
+    return pd.Series(values, index=index, dtype=float, name=payload[0]["target"])
+
+
+def counter_increase(counter: pd.Series) -> float:
+    """Total increase of a cumulative meter (e.g. DIRIS kWh index).
+
+    Equivalent to summing Graphite's ``nonNegativeDerivative``: NaN gaps are
+    bridged and negative steps (meter reset) are ignored.
+    """
+    steps = counter.dropna().diff()
+    return float(steps[steps > 0].sum())
+
+
+def annual_core_hours(daily_core_seconds: pd.Series, outlier_factor: float = 2.0,
+                      days_in_year: int = 365) -> float:
+    """Extrapolate daily accounting (core-seconds per day) to one full year.
+
+    Days missing from the accounting (NaN) and days above
+    ``outlier_factor`` x the median (accounting artefacts, or backlogs that
+    re-book the jobs of a preceding gap) are dropped; the mean of the
+    remaining days is then multiplied by ``days_in_year``.
+    """
+    days = daily_core_seconds.dropna()
+    if days.empty:
+        raise ValueError("no accounting data")
+    clean = days[days <= outlier_factor * days.median()]
+    return float(clean.mean() * days_in_year / SECONDS_PER_HOUR)
+
+
+def grafana_year(year: int, cache: str | Path | None = None) -> pd.DataFrame:
+    """Daily Datarmor series of one calendar year, from Grafana (Graphite).
+
+    Columns:
+
+    * ``diris_kwh`` / ``diris_it_kwh``: cumulative kWh indexes of the total
+      (cooling included) and IT-only meters. The first row (1 January 00:00
+      UTC) is the starting index, so :func:`counter_increase` covers the
+      whole year;
+    * ``EFWALCoreUsed_<cluster>`` for each of :data:`PBS_CLUSTERS`: reserved
+      core-seconds booked each day (NaN on days missing from the accounting).
+
+    If ``cache`` is given and exists, it is read instead of querying the
+    server; otherwise the downloaded table is written there.
+    """
+    if cache is not None and Path(cache).exists():
+        return pd.read_csv(cache, index_col=0, parse_dates=True)
+    # One day before 1 January so that the 1 January 00:00 index is included.
+    start = (pd.Timestamp(year=year, month=1, day=1) - pd.Timedelta(days=1)).strftime("%Y%m%d")
+    end = f"{year + 1}0101"
+    columns = {
+        "diris_kwh": fetch_graphite(DIRIS_DATARMOR_TARGET, start, end),
+        "diris_it_kwh": fetch_graphite(DIRIS_DATARMOR_IT_TARGET, start, end),
+    }
+    for cluster in PBS_CLUSTERS:
+        target = PBS_TARGET.format(cluster=cluster, metric="EFWALCoreUsed")
+        columns[f"EFWALCoreUsed_{cluster}"] = fetch_graphite(target, f"{year}0101", end)
+    table = pd.DataFrame(columns)
+    table.index.name = "time_utc"
+    if cache is not None:
+        table.to_csv(cache)
+    return table

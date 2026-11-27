@@ -6,9 +6,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import datarmor  # noqa: E402
 from datarmor import (  # noqa: E402
     MachineStats,
+    annual_core_hours,
     anonymize_users,
+    counter_increase,
     cpu_hours_by_user,
     energy_kwh,
     footprint_tco2e,
@@ -131,10 +134,59 @@ def test_anonymize_users_rejects_duplicates():
         anonymize_users(table)
 
 
-
 def test_all_users_sum_to_machine_electricity():
     # L1p5: attributing all the machine hours gives back E_machine * FE_elec
     machine = MachineStats(2024, energy_kwh=5e5, core_hours=2e6)
     users_hours = [1.5e6, 4e5, 1e5]
     total = sum(footprint_tco2e(h * 3600, machine, 0.05) for h in users_hours)
     assert total == pytest.approx(5e5 * 0.05 / 1000)
+
+
+def _daily(values, start="2025-01-01"):
+    import pandas as pd
+    index = pd.date_range(start, periods=len(values), freq="D", tz="UTC")
+    return pd.Series(values, index=index, dtype=float)
+
+
+def test_counter_increase_bridges_gaps_and_ignores_resets():
+    nan = float("nan")
+    # 100 -> 110 (+10), gap, -> 130 (+20), reset to 0 (ignored), -> 5 (+5)
+    assert counter_increase(_daily([100, 110, nan, 130, 0, 5])) == pytest.approx(35)
+
+
+def test_annual_core_hours_drops_gaps_and_spikes():
+    nan = float("nan")
+    hour = 3600.0
+    # 2 cores all day = 48 core-hours/day; one missing day; one artefact
+    # such as the 81 M core-hours booked on 2025-03-17.
+    days = _daily([48 * hour, nan, 48 * hour, 1e6 * 48 * hour, 48 * hour])
+    assert annual_core_hours(days) == pytest.approx(48 * 365)
+    assert annual_core_hours(days, outlier_factor=float("inf")) > 1e6
+
+
+def test_annual_core_hours_rejects_empty():
+    with pytest.raises(ValueError):
+        annual_core_hours(_daily([float("nan")] * 3))
+
+
+def test_grafana_year_uses_full_year_and_cache(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_fetch(target, start, end):
+        calls.append((target, start, end))
+        if target.startswith("sumSeries(DIRIS"):
+            return _daily(range(366), start="2025-01-01")  # +1 kWh per day
+        return _daily([3600.0] * 365, start="2025-01-02")
+
+    monkeypatch.setattr(datarmor, "fetch_graphite", fake_fetch)
+    cache = tmp_path / "grafana-2025.csv"
+    table = datarmor.grafana_year(2025, cache=cache)
+    # energy counters start the day before so that 1 January 00:00 is kept
+    assert calls[0][1:] == ("20241231", "20260101")
+    assert counter_increase(table["diris_kwh"]) == pytest.approx(365)
+    assert len(calls) == 2 + len(datarmor.PBS_CLUSTERS)
+    assert table["EFWALCoreUsed_HPCSIMPLE"].sum() == pytest.approx(365 * 3600)
+    # second call reads the cache, no network access
+    again = datarmor.grafana_year(2025, cache=cache)
+    assert len(calls) == 2 + len(datarmor.PBS_CLUSTERS)
+    assert counter_increase(again["diris_kwh"]) == pytest.approx(365)
