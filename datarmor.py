@@ -69,6 +69,46 @@ def read_monthly_cpu_seconds(path: str | Path, strict: bool = True) -> pd.DataFr
     return df
 
 
+def read_pbsacct_report(path: str | Path) -> pd.DataFrame:
+    """Read a per-user ``pbsacct`` report (one row per user, annual totals).
+
+    Two layouts are accepted:
+
+    * the raw fixed-width export sent by Ifremer: a whitespace-separated
+      header, a line of dashes, then one row per user;
+    * the anonymised CSV written by :func:`anonymize_users`.
+
+    The ``user`` column becomes the index. ``Ucput_s`` holds the CPU seconds
+    actually consumed by the user's jobs.
+    """
+    path = Path(path)
+    if path.suffix == ".csv":
+        return pd.read_csv(path, index_col="user")
+    df = pd.read_csv(path, sep=r"\s+", skiprows=[1])  # row 1 = "-----" ruler
+    return df.set_index("user")
+
+
+def anonymize_users(table: pd.DataFrame, sort_by: str | None = None,
+                    prefix: str = "user") -> tuple[pd.DataFrame, dict[str, str]]:
+    """Replace the logins of the index by ``user01``, ``user02``...
+
+    Rows are first sorted by ``sort_by`` (descending), so that the new
+    labels follow the usage ranking and leak nothing about the original
+    (alphabetical or arbitrary) order. Returns the anonymised table and the
+    ``{login: alias}`` mapping, which must NOT be committed.
+    """
+    if not table.index.is_unique:
+        raise ValueError("user index contains duplicates")
+    if sort_by is not None:
+        table = table.sort_values(sort_by, ascending=False, kind="stable")
+    width = max(2, len(str(len(table))))
+    mapping = {login: f"{prefix}{i:0{width}d}"
+               for i, login in enumerate(table.index, start=1)}
+    anonymised = table.rename(index=mapping)
+    anonymised.index.name = "user"
+    return anonymised, mapping
+
+
 def parse_mail_cpu_seconds(path: str | Path) -> pd.DataFrame:
     """Parse the e-mail format ``YYYYMM:user : seconds`` into a long DataFrame.
 

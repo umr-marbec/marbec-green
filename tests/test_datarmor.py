@@ -8,11 +8,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from datarmor import (  # noqa: E402
     MachineStats,
+    anonymize_users,
     cpu_hours_by_user,
     energy_kwh,
     footprint_tco2e,
     parse_mail_cpu_seconds,
     read_monthly_cpu_seconds,
+    read_pbsacct_report,
 )
 
 MONTHS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet",
@@ -86,3 +88,44 @@ def test_parse_mail(tmp_path):
     assert len(df) == 2
     assert df.loc[0].tolist() == [2023, 1, "adupaix", 478250353]
     assert df["month"].tolist() == [1, 12]
+
+
+PBSACCT_RAW = """\
+user        count(jobid)  Ucput_s     EFWALCoreUsed
+----------  ------------  ----------  -------------
+alice       10            3600        7200.0
+bob         5             36000       72000.0
+carol       1             0           10.0
+"""
+
+
+def test_read_pbsacct_report_fixed_width(tmp_path):
+    path = tmp_path / "marbec-2025.txt"
+    path.write_text(PBSACCT_RAW, encoding="utf-8")
+    table = read_pbsacct_report(path)
+    assert list(table.index) == ["alice", "bob", "carol"]
+    assert table.loc["bob", "Ucput_s"] == 36000
+    assert table["count(jobid)"].sum() == 16
+
+
+def test_anonymize_users_orders_by_usage_and_hides_logins(tmp_path):
+    path = tmp_path / "marbec-2025.txt"
+    path.write_text(PBSACCT_RAW, encoding="utf-8")
+    table = read_pbsacct_report(path)
+    anon, mapping = anonymize_users(table, sort_by="Ucput_s")
+    assert mapping == {"bob": "user01", "alice": "user02", "carol": "user03"}
+    assert list(anon.index) == ["user01", "user02", "user03"]
+    assert anon["Ucput_s"].sum() == table["Ucput_s"].sum()
+    # round trip through the anonymised CSV, no login left in the file
+    out = tmp_path / "anon.csv"
+    anon.to_csv(out)
+    text = out.read_text(encoding="utf-8")
+    assert not any(login in text for login in mapping)
+    assert read_pbsacct_report(out).equals(anon)
+
+
+def test_anonymize_users_rejects_duplicates():
+    import pandas as pd
+    table = pd.DataFrame({"Ucput_s": [1, 2]}, index=["x", "x"])
+    with pytest.raises(ValueError):
+        anonymize_users(table)
