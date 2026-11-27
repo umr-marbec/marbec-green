@@ -1,0 +1,108 @@
+"""Estimate the carbon footprint of MARBEC usage on the Datarmor HPC (Ifremer).
+
+Method
+------
+1. Per-user CPU time (seconds) is summed and converted to core-hours.
+2. The energy per core-hour is the machine-wide electricity measurement
+   (DIRIS meters, Grafana) divided by the machine-wide delivered core-hours.
+3. An optional overhead factor (e.g. a PUE) is applied, but only if it is
+   *not* already included in the measured energy.
+4. Energy is converted to CO2e with an electricity emission factor
+   (ADEME Base Empreinte, French average mix for the relevant year).
+
+Manufacturing (embodied) emissions are NOT included by this module.
+
+References
+----------
+- Berthoud et al. (2020), hal-02549565.
+- Mariette et al. (2022), doi:10.1088/2634-4505/ac84a4.
+- Lannelongue et al. (2021), doi:10.1002/advs.202100707.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import pandas as pd
+
+SECONDS_PER_HOUR = 3600.0
+KG_PER_TONNE = 1000.0
+EXPECTED_MONTHS = 12
+
+# Lines such as "202301:adupaix : 478250353" (YYYYMM:user:cpu_seconds)
+_MAIL_LINE = re.compile(r"^\s*(\d{4})(\d{2})\s*:\s*([A-Za-z0-9_]+)\s*:\s*(\d+)\s*$")
+
+
+@dataclass(frozen=True)
+class MachineStats:
+    """Machine-wide Datarmor statistics for one year (Grafana dashboards)."""
+
+    year: int
+    energy_kwh: float  # total electricity measured by the DIRIS meters
+    core_hours: float  # total core-hours delivered by the machine
+
+    def __post_init__(self) -> None:
+        if self.energy_kwh <= 0 or self.core_hours <= 0:
+            raise ValueError("energy_kwh and core_hours must be strictly positive")
+
+    @property
+    def kwh_per_core_hour(self) -> float:
+        """Mean energy per core-hour (kWh), i.e. mean power per core (kW)."""
+        return self.energy_kwh / self.core_hours
+
+
+def read_monthly_cpu_seconds(path: str | Path, strict: bool = True) -> pd.DataFrame:
+    """Read the per-user x per-month CPU-seconds table (one row per user).
+
+    The file has one title line, then a header ``user,<month>,<month>...``.
+    With ``strict=True`` a ValueError is raised if the file does not contain
+    exactly 12 month columns (e.g. the 2024 file, where "Mai" is missing).
+    """
+    df = pd.read_csv(path, skiprows=1, index_col=0)
+    df.columns = df.columns.str.strip()
+    if strict and df.shape[1] != EXPECTED_MONTHS:
+        raise ValueError(
+            f"{path}: {df.shape[1]} month columns found, expected "
+            f"{EXPECTED_MONTHS}: {list(df.columns)}"
+        )
+    return df
+
+
+def parse_mail_cpu_seconds(path: str | Path) -> pd.DataFrame:
+    """Parse the e-mail format ``YYYYMM:user : seconds`` into a long DataFrame.
+
+    Returns columns ``year``, ``month``, ``user``, ``cpu_seconds``.
+    """
+    records = []
+    with open(path, encoding="utf-8") as fin:
+        for line in fin:
+            match = _MAIL_LINE.match(line)
+            if match:
+                year, month, user, seconds = match.groups()
+                records.append((int(year), int(month), user, int(seconds)))
+    return pd.DataFrame(records, columns=["year", "month", "user", "cpu_seconds"])
+
+
+def cpu_hours_by_user(monthly_seconds: pd.DataFrame) -> pd.Series:
+    """Total core-hours per user (non-zero users only), sorted descending."""
+    hours = monthly_seconds.sum(axis=1) / SECONDS_PER_HOUR
+    return hours[hours > 0].sort_values(ascending=False)
+
+
+def energy_kwh(cpu_seconds: float, machine: MachineStats,
+               overhead_factor: float = 1.0) -> float:
+    """Convert CPU-seconds to electricity (kWh)."""
+    core_hours = cpu_seconds / SECONDS_PER_HOUR
+    return core_hours * machine.kwh_per_core_hour * overhead_factor
+
+
+def footprint_tco2e(cpu_seconds: float, machine: MachineStats,
+                    kgco2e_per_kwh: float, overhead_factor: float = 1.0) -> float:
+    """Convert CPU-seconds to tonnes of CO2-equivalent.
+
+    ``overhead_factor`` should be a PUE only if the machine energy does not
+    already include cooling; keep 1.0 otherwise to avoid double counting.
+    """
+    kwh = energy_kwh(cpu_seconds, machine, overhead_factor)
+    return kwh * kgco2e_per_kwh / KG_PER_TONNE

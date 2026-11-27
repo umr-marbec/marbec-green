@@ -1,0 +1,88 @@
+"""Unit tests for datarmor.py (run with: python -m pytest tests/)."""
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from datarmor import (  # noqa: E402
+    MachineStats,
+    cpu_hours_by_user,
+    energy_kwh,
+    footprint_tco2e,
+    parse_mail_cpu_seconds,
+    read_monthly_cpu_seconds,
+)
+
+MONTHS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet",
+          "Aout", "Septembre", "Octobre", "Novembre", "Décembre"]
+MACHINE_2023 = MachineStats(2023, energy_kwh=1.64e6,
+                            core_hours=(2003 + 47780 + 17196) * 1000)
+
+
+def _write_table(path, months, rows):
+    lines = [",Bilan mensuel CPU (en seconde)", "user," + ",".join(months)]
+    lines += [f"{user}," + ",".join(str(v) for v in values) for user, values in rows]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_kwh_per_core_hour():
+    assert MACHINE_2023.kwh_per_core_hour == pytest.approx(0.0244853, rel=1e-5)
+
+
+def test_machine_stats_rejects_non_positive():
+    with pytest.raises(ValueError):
+        MachineStats(2024, energy_kwh=0, core_hours=1)
+
+
+def test_one_core_hour_at_one_kw():
+    machine = MachineStats(2024, energy_kwh=1.0, core_hours=1.0)
+    assert energy_kwh(3600, machine) == pytest.approx(1.0)
+    assert footprint_tco2e(3600, machine, kgco2e_per_kwh=1000.0) == pytest.approx(1.0)
+
+
+def test_overhead_factor_is_linear():
+    base = footprint_tco2e(1e9, MACHINE_2023, 0.052)
+    assert footprint_tco2e(1e9, MACHINE_2023, 0.052, 1.42) == pytest.approx(1.42 * base)
+
+
+def test_reproduces_previous_notebook_value():
+    cpu_seconds = 31_748_743_199  # sum of marbec-datarmor-2024.csv
+    assert footprint_tco2e(cpu_seconds, MACHINE_2023, 0.052, 1.42) == pytest.approx(
+        15.94, abs=0.01)
+
+
+def test_missing_month_is_detected(tmp_path):
+    months = [m for m in MONTHS if m != "Mai"]  # same layout as the 2024 file
+    path = _write_table(tmp_path / "cpu.csv", months, [("alice", [1] * 11)])
+    with pytest.raises(ValueError, match="11 month columns"):
+        read_monthly_cpu_seconds(path)
+    assert read_monthly_cpu_seconds(path, strict=False).shape == (1, 11)
+
+
+def test_full_year_and_whitespace_in_header(tmp_path):
+    months = [m + " " if m == "Aout" else m for m in MONTHS]
+    path = _write_table(tmp_path / "cpu.csv", months, [("alice", [3600] * 12)])
+    df = read_monthly_cpu_seconds(path)
+    assert "Aout" in df.columns
+    assert df.to_numpy().sum() / 3600 == 12
+
+
+def test_cpu_hours_by_user_drops_zero_and_sorts(tmp_path):
+    rows = [("idle", [0] * 12), ("small", [3600] + [0] * 11), ("big", [7200] * 12)]
+    path = _write_table(tmp_path / "cpu.csv", MONTHS, rows)
+    hours = cpu_hours_by_user(read_monthly_cpu_seconds(path))
+    assert list(hours.index) == ["big", "small"]
+    assert hours["big"] == pytest.approx(24.0)
+
+
+def test_parse_mail(tmp_path):
+    path = tmp_path / "mail.txt"
+    path.write_text("Bonjour,\n202301:adupaix : 478250353\n\n202312:dkaplan:8771535\n"
+                    "not a data line\n", encoding="utf-8")
+    df = parse_mail_cpu_seconds(path)
+    assert len(df) == 2
+    assert df.loc[0].tolist() == [2023, 1, "adupaix", 478250353]
+    assert df["month"].tolist() == [1, 12]
