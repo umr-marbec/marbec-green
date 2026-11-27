@@ -27,6 +27,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+import numpy as np
 
 import pandas as pd
 
@@ -253,12 +254,8 @@ def grafana_year(year: int, cache: str | Path | None = None) -> pd.DataFrame:
     pbs_columns = [c for c in table if c.startswith("EFWALCoreUsed_")]
     table.loc[table.index >= next_year, pbs_columns] = np.nan
 
-
     table.index.name = "time_utc"
     if cache is not None:
         table.to_csv(cache)
-
-
-
 
     return table
