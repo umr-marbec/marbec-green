@@ -129,3 +129,12 @@ def test_anonymize_users_rejects_duplicates():
     table = pd.DataFrame({"Ucput_s": [1, 2]}, index=["x", "x"])
     with pytest.raises(ValueError):
         anonymize_users(table)
+
+
+
+def test_all_users_sum_to_machine_electricity():
+    # L1p5: attributing all the machine hours gives back E_machine * FE_elec
+    machine = MachineStats(2024, energy_kwh=5e5, core_hours=2e6)
+    users_hours = [1.5e6, 4e5, 1e5]
+    total = sum(footprint_tco2e(h * 3600, machine, 0.05) for h in users_hours)
+    assert total == pytest.approx(5e5 * 0.05 / 1000)

@@ -1,22 +1,23 @@
-"""Estimate the carbon footprint of MARBEC usage on the Datarmor HPC (Ifremer).
+"""Estimate the electricity carbon footprint of MARBEC usage on Datarmor (Ifremer).
 
-Method
-------
-1. Per-user CPU time (seconds) is summed and converted to core-hours.
-2. The energy per core-hour is the machine-wide electricity measurement
-   (DIRIS meters, Grafana) divided by the machine-wide delivered core-hours.
-3. An optional overhead factor (e.g. a PUE) is applied, but only if it is
-   *not* already included in the measured energy.
-4. Energy is converted to CO2e with an electricity emission factor
-   (ADEME Base Empreinte, French average mix for the relevant year).
+Electricity term of the Labos 1point5 method (GT "Infrastructures de recherche :
+calcul", January 2024, https://labos1point5.org/les-rapports/estimation-empreinte-calcul)::
 
-Manufacturing (embodied) emissions are NOT included by this module.
+    FE_core_hour = E_machine * FE_elec / H_machine      (kgCO2e per core-hour)
+    footprint    = FE_core_hour * H_user
+
+- ``E_machine``: annual electricity of the machine room (total DIRIS meter,
+  cooling included, so no PUE is applied on top of it);
+- ``FE_elec``: ADEME electricity emission factor (French average mix of the year);
+- ``H_machine`` and ``H_user``: effective core-hours, i.e. hours *reserved* by
+  jobs (report annex 2), so that the sum over all users equals the total.
+
+Manufacturing, refrigerant leaks and generator fuel are NOT included.
 
 References
 ----------
+- Labos 1point5 GT Calcul (2024), report above.
 - Berthoud et al. (2020), hal-02549565.
-- Mariette et al. (2022), doi:10.1088/2634-4505/ac84a4.
-- Lannelongue et al. (2021), doi:10.1002/advs.202100707.
 """
 from __future__ import annotations
 
@@ -139,7 +140,7 @@ def energy_kwh(cpu_seconds: float, machine: MachineStats,
 
 def footprint_tco2e(cpu_seconds: float, machine: MachineStats,
                     kgco2e_per_kwh: float, overhead_factor: float = 1.0) -> float:
-    """Convert CPU-seconds to tonnes of CO2-equivalent.
+    """Electricity footprint of core-seconds (tCO2e).
 
     ``overhead_factor`` should be a PUE only if the machine energy does not
     already include cooling; keep 1.0 otherwise to avoid double counting.
