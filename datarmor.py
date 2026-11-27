@@ -247,7 +247,18 @@ def grafana_year(year: int, cache: str | Path | None = None) -> pd.DataFrame:
         target = PBS_TARGET.format(cluster=cluster, metric="EFWALCoreUsed")
         columns[f"EFWALCoreUsed_{cluster}"] = fetch_graphite(target, f"{year}0101", end)
     table = pd.DataFrame(columns)
+    # Keep the extra 1 January 00:00 point only for the cumulative meters;
+    # accounting columns must not include the first day of the next year.
+    next_year = pd.Timestamp(year=year + 1, month=1, day=1, tz="UTC")
+    pbs_columns = [c for c in table if c.startswith("EFWALCoreUsed_")]
+    table.loc[table.index >= next_year, pbs_columns] = np.nan
+
+
     table.index.name = "time_utc"
     if cache is not None:
         table.to_csv(cache)
+
+
+
+
     return table
