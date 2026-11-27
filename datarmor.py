@@ -237,7 +237,9 @@ def grafana_year(year: int, cache: str | Path | None = None) -> pd.DataFrame:
     """
     if cache is not None and Path(cache).exists():
         return pd.read_csv(cache, index_col=0, parse_dates=True)
-    # One day before 1 January so that the 1 January 00:00 index is included.
+    # Graphite returns the points in (from, until]: ``from`` is exclusive, so
+    # query from the day before to get the 1 January point; ``until`` is
+    # inclusive and gives the 1 January (next year) point.
     start = (pd.Timestamp(year=year, month=1, day=1) - pd.Timedelta(days=1)).strftime("%Y%m%d")
     end = f"{year + 1}0101"
     columns = {
@@ -246,7 +248,7 @@ def grafana_year(year: int, cache: str | Path | None = None) -> pd.DataFrame:
     }
     for cluster in PBS_CLUSTERS:
         target = PBS_TARGET.format(cluster=cluster, metric="EFWALCoreUsed")
-        columns[f"EFWALCoreUsed_{cluster}"] = fetch_graphite(target, f"{year}0101", end)
+        columns[f"EFWALCoreUsed_{cluster}"] = fetch_graphite(target, start, end)
     table = pd.DataFrame(columns)
     # Keep the extra 1 January 00:00 point only for the cumulative meters;
     # accounting columns must not include the first day of the next year.

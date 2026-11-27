@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -173,19 +174,26 @@ def test_grafana_year_uses_full_year_and_cache(tmp_path, monkeypatch):
     calls = []
 
     def fake_fetch(target, start, end):
+        """Mimic Graphite: daily points in (start, end], ``from`` exclusive."""
         calls.append((target, start, end))
+        first = pd.Timestamp(start) + pd.Timedelta(days=1)
+        n_days = (pd.Timestamp(end) - first).days + 1
         if target.startswith("sumSeries(DIRIS"):
-            return _daily(range(366), start="2025-01-01")  # +1 kWh per day
-        return _daily([3600.0] * 365, start="2025-01-02")
+            return _daily(range(n_days), start=first)  # +1 kWh per day
+        return _daily([3600.0] * n_days, start=first)
 
     monkeypatch.setattr(datarmor, "fetch_graphite", fake_fetch)
     cache = tmp_path / "grafana-2025.csv"
     table = datarmor.grafana_year(2025, cache=cache)
-    # energy counters start the day before so that 1 January 00:00 is kept
-    assert calls[0][1:] == ("20241231", "20260101")
+    # every series starts the day before so that 1 January is kept
+    assert all(call[1:] == ("20241231", "20260101") for call in calls)
     assert counter_increase(table["diris_kwh"]) == pytest.approx(365)
     assert len(calls) == 2 + len(datarmor.PBS_CLUSTERS)
-    assert table["EFWALCoreUsed_HPCSIMPLE"].sum() == pytest.approx(365 * 3600)
+    for cluster in datarmor.PBS_CLUSTERS:
+        pbs = table[f"EFWALCoreUsed_{cluster}"]
+        assert pbs.loc["2025-01-01":"2025-12-31"].notna().all()  # 1 January kept
+        assert pbs.loc["2026-01-01":].isna().all()  # next year dropped
+        assert pbs.sum() == pytest.approx(365 * 3600)
     # second call reads the cache, no network access
     again = datarmor.grafana_year(2025, cache=cache)
     assert len(calls) == 2 + len(datarmor.PBS_CLUSTERS)
